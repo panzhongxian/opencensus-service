@@ -17,6 +17,7 @@ package octrace
 import (
 	"context"
 	"errors"
+	"fmt"
 	"io"
 
 	"go.opencensus.io/trace"
@@ -27,6 +28,7 @@ import (
 	"github.com/census-instrumentation/opencensus-service/consumer"
 	"github.com/census-instrumentation/opencensus-service/data"
 	"github.com/census-instrumentation/opencensus-service/observability"
+	"github.com/panzhongxian/opencensus-trace-config/democonfig"
 )
 
 const (
@@ -35,12 +37,17 @@ const (
 	messageChannelSize = 64
 )
 
+type ConfigUpdater interface {
+	Update(tcs agenttracepb.TraceService_ConfigServer, node *commonpb.Node) error
+}
+
 // Receiver is the type used to handle spans from OpenCensus exporters.
 type Receiver struct {
-	nextConsumer consumer.TraceConsumer
-	numWorkers   int
-	workers      []*receiverWorker
-	messageChan  chan *traceDataWithCtx
+	nextConsumer  consumer.TraceConsumer
+	numWorkers    int
+	workers       []*receiverWorker
+	messageChan   chan *traceDataWithCtx
+	configUpdater ConfigUpdater
 }
 
 type traceDataWithCtx struct {
@@ -56,10 +63,12 @@ func New(nextConsumer consumer.TraceConsumer, opts ...Option) (*Receiver, error)
 
 	messageChan := make(chan *traceDataWithCtx, messageChannelSize)
 	ocr := &Receiver{
-		nextConsumer: nextConsumer,
-		numWorkers:   defaultNumWorkers,
-		messageChan:  messageChan,
+		nextConsumer:  nextConsumer,
+		numWorkers:    defaultNumWorkers,
+		messageChan:   messageChan,
+		configUpdater: &democonfig.DemoConfigUpdater{},
 	}
+
 	for _, opt := range opts {
 		opt(ocr)
 	}
@@ -77,13 +86,21 @@ func New(nextConsumer consumer.TraceConsumer, opts ...Option) (*Receiver, error)
 }
 
 var _ agenttracepb.TraceServiceServer = (*Receiver)(nil)
-
 var errUnimplemented = errors.New("unimplemented")
 
 // Config handles configuration messages.
 func (ocr *Receiver) Config(tcs agenttracepb.TraceService_ConfigServer) error {
 	// TODO: Implement when we define the config receiver/sender.
-	return errUnimplemented
+	recv, err := tcs.Recv()
+	if err != nil {
+		return err
+	}
+
+	if recv.Node == nil {
+		fmt.Println("No node info.")
+		return errTraceExportProtocolViolation
+	}
+	return ocr.configUpdater.Update(tcs, recv.Node)
 }
 
 var errTraceExportProtocolViolation = errors.New("protocol violation: Export's first message must have a Node")
